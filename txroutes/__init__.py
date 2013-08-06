@@ -88,6 +88,18 @@ class Dispatcher(Resource):
     def render_DELETE(self, request):
         return self.__render('DELETE', request)
 
+    def render_PATCH(self, request):
+        return self.__render('PATCH', request)
+
+    def render_OPTIONS(self, request):
+        return self.__render('OPTIONS', request)
+
+    def render_TRACE(self, request):
+        return self.__render('TRACE', request)
+
+    def render_CONNECT(self, request):
+        return self.__render('CONNECT', request)
+
     def __render(self, method, request):
 
         wsgi_environ = {}
