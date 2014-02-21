@@ -1,6 +1,6 @@
 import routes
 from twisted.web.resource import Resource
-
+from twisted.web.server import NOT_DONE_YET
 
 class Dispatcher(Resource):
     '''
@@ -8,12 +8,14 @@ class Dispatcher(Resource):
 
     Frequently, it's much easier to describe your website layout using routes
     instead of Resource from twisted.web.resource. This small library lets you
-    dispatch with routes in your twisted.web application.
+    dispatch with routes in your twisted.web application. It also handles some
+    of the bookkeeping with deferreds, so you don't have to return NOT_DONE_YET
+    yourself.
 
     Usage:
 
-        from twisted.internet import reactor, task
-        from twisted.web.server import Site, NOT_DONE_YET
+        from twisted.internet import defer, reactor, task
+        from twisted.web.server import Site
 
         from txroutes import Dispatcher
 
@@ -30,11 +32,10 @@ class Dispatcher(Resource):
             def post_data(self, request):
                 return '<html><body>OK</body></html>'
 
+            @defer.inlineCallbacks
             def deferred_example(self, request):
                 request.write('<html><body>Wait a tic...</body></html>')
-                task.deferLater(reactor, 5, lambda: request.finish())
-
-                return NOT_DONE_YET
+                yield task.deferLater(reactor, 5, lambda: request.finish())
 
         c = Controller()
 
@@ -49,7 +50,7 @@ class Dispatcher(Resource):
                 action='post_data', conditions=dict(method=['POST']))
 
         dispatcher.connect(name='deferred_example', route='/wait', controller=c,
-                action='deferred_example')
+                action='deferred_example', deferred=True)
 
         factory = Site(dispatcher)
         reactor.listenTCP(8000, factory)
@@ -82,6 +83,7 @@ class Dispatcher(Resource):
         result = self.__mapper.match(environ=wsgi_environ)
 
         handler = None
+        deferred = None
 
         if result is not None:
             controller = result.get('controller', None)
@@ -95,8 +97,18 @@ class Dispatcher(Resource):
                     del result['action']
                     handler = getattr(controller, action, None)
 
+            deferred = result.get('deferred', None)
+
+            if deferred:
+                del result['deferred']
+
         if handler:
-            return handler(request, **result)
+            if not deferred:
+                return handler(request, **result)
+            else:
+                handler(request, **result)
+                return NOT_DONE_YET
+
         else:
             return self._render_404(request)
 
@@ -110,8 +122,8 @@ if __name__ == '__main__':
     import logging
 
     import twisted.python.log
-    from twisted.internet import reactor, task
-    from twisted.web.server import Site, NOT_DONE_YET
+    from twisted.internet import defer, reactor, task
+    from twisted.web.server import Site
 
     # Set up logging
     log = logging.getLogger('twisted_routes')
@@ -136,11 +148,10 @@ if __name__ == '__main__':
         def post_data(self, request):
             return '<html><body>OK</body></html>'
 
+        @defer.inlineCallbacks
         def deferred_example(self, request):
             request.write('<html><body>Wait a tic...</body></html>')
-            task.deferLater(reactor, 5, lambda: request.finish())
-
-            return NOT_DONE_YET
+            yield task.deferLater(reactor, 5, lambda: request.finish())
 
     c = Controller()
 
@@ -155,7 +166,7 @@ if __name__ == '__main__':
             action='post_data', conditions=dict(method=['POST']))
 
     dispatcher.connect(name='deferred_example', route='/wait', controller=c,
-            action='deferred_example')
+            action='deferred_example', deferred=True)
 
     factory = Site(dispatcher)
     reactor.listenTCP(8000, factory)
