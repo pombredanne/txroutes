@@ -1,4 +1,5 @@
 import routes
+from twisted.internet.defer import Deferred
 from twisted.web.resource import Resource
 from twisted.web.server import NOT_DONE_YET
 
@@ -50,7 +51,7 @@ class Dispatcher(Resource):
                 action='post_data', conditions=dict(method=['POST']))
 
         dispatcher.connect(name='deferred_example', route='/wait', controller=c,
-                action='deferred_example', deferred=True)
+                action='deferred_example')
 
         factory = Site(dispatcher)
         reactor.listenTCP(8000, factory)
@@ -83,7 +84,6 @@ class Dispatcher(Resource):
         result = self.__mapper.match(environ=wsgi_environ)
 
         handler = None
-        deferred = None
 
         if result is not None:
             controller = result.get('controller', None)
@@ -97,17 +97,13 @@ class Dispatcher(Resource):
                     del result['action']
                     handler = getattr(controller, action, None)
 
-            deferred = result.get('deferred', None)
-
-            if deferred:
-                del result['deferred']
-
         if handler:
-            if not deferred:
-                return handler(request, **result)
-            else:
-                handler(request, **result)
+            response = handler(request, **result)
+
+            if isinstance(response, Deferred):
                 return NOT_DONE_YET
+            else:
+                return response
 
         else:
             return self._render_404(request)
@@ -166,7 +162,7 @@ if __name__ == '__main__':
             action='post_data', conditions=dict(method=['POST']))
 
     dispatcher.connect(name='deferred_example', route='/wait', controller=c,
-            action='deferred_example', deferred=True)
+            action='deferred_example')
 
     factory = Site(dispatcher)
     reactor.listenTCP(8000, factory)
