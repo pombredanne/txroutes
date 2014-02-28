@@ -3,6 +3,8 @@ from twisted.internet.defer import Deferred, inlineCallbacks
 from twisted.web.resource import Resource
 from twisted.web.server import NOT_DONE_YET
 from twisted.python.failure import Failure
+from twisted.python.log import logging
+
 
 class Dispatcher(Resource):
     '''
@@ -111,12 +113,19 @@ class Dispatcher(Resource):
 
     # Subclasses can override with their own error rendering.
     def _render_error(self, request, exception=None, failure=None):
+        return self.__render_default_error(request, exception, failure)
+
+    def __render_default_error(self, request, exception=None, failure=None):
+        if failure:
+            logging.error(failure.getTraceback())
+        else:
+            logging.exception(exception)
         request.setResponseCode(500)
         return '<html><head><title>500 Internal Server Error</title></head>' \
                 '<body><h1>Internal Server Error</h1></body></html>'
 
     @inlineCallbacks
-    def __detect_and_execute_handler(self, request, handler, raise_exceptions=False):
+    def __detect_and_execute_handler(self, request, handler, use_default_error_rendering=False):
 
         # Detect the content and whether the request is complete based
         # on what the handler returns.
@@ -146,35 +155,28 @@ class Dispatcher(Resource):
 
         except Exception, e:
 
-            # If we are supposed to simply re-raise exceptions (this happens
-            # when an unhandled error occurs in _render_error) then raise
-            # and exception that will show as an unhandled error in Deferred.
-            # Still, make sure that the request is finished to avoid hanging
-            # the response.
-            if raise_exceptions:
-                if not request.finished:
-                    request.finish()
-                raise
-
-            # Allow subclasses to override logging for these exceptions.
             # When using inlineCallbacks, logger.exception() does not show the
             # real traceback. Subclasses will need log failure.getTraceback()
             # to show tracebacks. Use Failure._findFailure() to get the failure
             # associated with this exception.
             failure = None
             try:
-                try:
-                    failure = Failure._findFailure()
-                except Exception:
-                    failure = None
+                failure = Failure._findFailure()
+            except Exception:
+                failure = None
 
-            # After attempting to log the exception, always render the exception
-            # and prevent infinite recursion by making sure this recursive
-            # invocation simply throws on the next time through.
-            finally:
+            # Use default error rendering when a subclass override of
+            # _render_error itself raised an unhandled error.
+            if use_default_error_rendering:
+                self.__render_default_error(request, e, failure)
+
+            # Otherwise, render the error and finish the request. Prevent
+            # infinite recursion by ensuring this recursive invocation falls
+            # back to __render_default_error.
+            else:
                 handler = lambda request: self._render_error(request, e, failure)
                 yield self.__detect_and_execute_handler(request, handler,
-                        raise_exceptions=True)
+                        use_default_error_rendering=True)
 
 
 if __name__ == '__main__':
