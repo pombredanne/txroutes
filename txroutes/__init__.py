@@ -84,7 +84,7 @@ class Dispatcher(Resource):
 
         result = self.__mapper.match(environ=wsgi_environ)
 
-        handler = None
+        handler = self._render_404
 
         if result is not None:
             controller = result.get('controller', None)
@@ -100,38 +100,20 @@ class Dispatcher(Resource):
                     if func:
                         handler = lambda request: func(request, **result)
 
-        try:
-            handler = handler or self._render_404
-            self.__detect_and_execute_handler(request, handler)
-            return NOT_DONE_YET
-
-        except Exception, e:
-            try:
-                self._log_exception(request, e)
-            finally:
-                handler = self._render_500
-                self.__detect_and_execute_handler(request, handler)
-                return NOT_DONE_YET
-
-    # Subclasses can override with their own logging.
-    def _log_failure(self, request, failure):
-        pass
-
-    # Subclasses can override with their own logging.
-    def _log_exception(self, request, exception):
-        pass
-
-    # Subclasses can override with their own exception rendering.
-    def _render_exception(self, request, exception):
-        request.setResponseCode(500)
-        return '<html><head><title>500 Internal Server Error</title></head>' \
-                '<body><h1>Internal Server Error</h1></body></html>'
+        self.__detect_and_execute_handler(request, handler)
+        return NOT_DONE_YET
 
     # Subclasses can override with their own 404 rendering.
     def _render_404(self, request):
         request.setResponseCode(404)
         return '<html><head><title>404 Not Found</title></head>' \
                 '<body><h1>Not found</h1></body></html>'
+
+    # Subclasses can override with their own error rendering.
+    def _render_error(self, request, exception=None, failure=None):
+        request.setResponseCode(500)
+        return '<html><head><title>500 Internal Server Error</title></head>' \
+                '<body><h1>Internal Server Error</h1></body></html>'
 
     @inlineCallbacks
     def __detect_and_execute_handler(self, request, handler, raise_exceptions=False):
@@ -163,30 +145,34 @@ class Dispatcher(Resource):
                 request.finish()
 
         except Exception, e:
+
+            # If we are supposed to simply re-raise exceptions (this happens
+            # when an unhandled error occurs in _render_error) then raise
+            # and exception that will show as an unhandled error in Deferred.
+            # Still, make sure that the request is finished to avoid hanging
+            # the response.
             if raise_exceptions:
+                if not request.finished:
+                    request.finish()
                 raise
 
             # Allow subclasses to override logging for these exceptions.
             # When using inlineCallbacks, logger.exception() does not show the
-            # real traceback. We need log failure.getTraceback() to show that.
-            # Use Failure._findFailure() to get the failure associated
-            # with this exception.
+            # real traceback. Subclasses will need log failure.getTraceback()
+            # to show tracebacks. Use Failure._findFailure() to get the failure
+            # associated with this exception.
+            failure = None
             try:
                 try:
                     failure = Failure._findFailure()
                 except Exception:
                     failure = None
 
-                if failure:
-                    self._log_failure(request, failure)
-                else:
-                    self._log_exception(request, e)
-
             # After attempting to log the exception, always render the exception
             # and prevent infinite recursion by making sure this recursive
             # invocation simply throws on the next time through.
             finally:
-                handler = lambda request: self._render_exception(request, e)
+                handler = lambda request: self._render_error(request, e, failure)
                 yield self.__detect_and_execute_handler(request, handler,
                         raise_exceptions=True)
 
