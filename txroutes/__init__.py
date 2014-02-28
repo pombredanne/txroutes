@@ -1,7 +1,8 @@
 import routes
-from twisted.internet.defer import Deferred
+from twisted.internet.defer import Deferred, inlineCallbacks
 from twisted.web.resource import Resource
 from twisted.web.server import NOT_DONE_YET
+from twisted.python.failure import Failure
 
 class Dispatcher(Resource):
     '''
@@ -95,23 +96,99 @@ class Dispatcher(Resource):
 
                 if action is not None:
                     del result['action']
-                    handler = getattr(controller, action, None)
+                    func = getattr(controller, action, None)
+                    if func:
+                        handler = lambda request: func(request, **result)
 
-        if handler:
-            response = handler(request, **result)
+        try:
+            handler = handler or self._render_404
+            self.__detect_and_execute_handler(request, handler)
+            return NOT_DONE_YET
 
-            if isinstance(response, Deferred):
+        except Exception, e:
+            try:
+                self._log_exception(request, e)
+            finally:
+                handler = self._render_500
+                self.__detect_and_execute_handler(request, handler)
                 return NOT_DONE_YET
-            else:
-                return response
 
-        else:
-            return self._render_404(request)
+    # Subclasses can override with their own logging.
+    def _log_failure(self, request, failure):
+        pass
 
+    # Subclasses can override with their own logging.
+    def _log_exception(self, request, exception):
+        pass
+
+    # Subclasses can override with their own exception rendering.
+    def _render_exception(self, request, exception):
+        request.setResponseCode(500)
+        return '<html><head><title>500 Internal Server Error</title></head>' \
+                '<body><h1>Internal Server Error</h1></body></html>'
+
+    # Subclasses can override with their own 404 rendering.
     def _render_404(self, request):
         request.setResponseCode(404)
         return '<html><head><title>404 Not Found</title></head>' \
                 '<body><h1>Not found</h1></body></html>'
+
+    @inlineCallbacks
+    def __detect_and_execute_handler(self, request, handler, raise_exceptions=False):
+
+        # Detect the content and whether the request is complete based
+        # on what the handler returns.
+        try:
+            content = None
+            complete = False
+            response = handler(request)
+
+            if isinstance(response, Deferred):
+                content = yield response
+                complete = True
+
+            elif response is NOT_DONE_YET:
+                content = None
+                complete = False
+
+            else:
+                content = response
+                complete = True
+
+            # If this response is complete, but the request has not been
+            # finished yet, ensure finish is called.
+            if complete and not request.finished:
+                if content:
+                    request.write(content)
+                request.finish()
+
+        except Exception, e:
+            if raise_exceptions:
+                raise
+
+            # Allow subclasses to override logging for these exceptions.
+            # When using inlineCallbacks, logger.exception() does not show the
+            # real traceback. We need log failure.getTraceback() to show that.
+            # Use Failure._findFailure() to get the failure associated
+            # with this exception.
+            try:
+                try:
+                    failure = Failure._findFailure()
+                except Exception:
+                    failure = None
+
+                if failure:
+                    self._log_failure(request, failure)
+                else:
+                    self._log_exception(request, e)
+
+            # After attempting to log the exception, always render the exception
+            # and prevent infinite recursion by making sure this recursive
+            # invocation simply throws on the next time through.
+            finally:
+                handler = lambda request: self._render_exception(request, e)
+                yield self.__detect_and_execute_handler(request, handler,
+                        raise_exceptions=True)
 
 
 if __name__ == '__main__':
