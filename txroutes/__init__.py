@@ -102,8 +102,16 @@ class Dispatcher(Resource):
                     if func:
                         handler = lambda request: func(request, **result)
 
-        self.__detect_and_execute_handler(request, handler)
+        self.__detect_and_execute_handler(request, handler, wrap=True)
         return NOT_DONE_YET
+
+    # Subclasses can override with their own before rendering.
+    def _render_before(self, request):
+        pass
+
+    # Subclasses can override with their own after rendering.
+    def _render_after(self, request):
+        pass
 
     # Subclasses can override with their own 404 rendering.
     def _render_404(self, request):
@@ -125,32 +133,39 @@ class Dispatcher(Resource):
                 '<body><h1>Internal Server Error</h1></body></html>'
 
     @inlineCallbacks
-    def __detect_and_execute_handler(self, request, handler, use_default_error_rendering=False):
+    def __detect_and_execute_handler(self,
+            request,
+            handler,
+            wrap=False,
+            use_default_error_rendering=False,
+            ):
 
-        # Detect the content and whether the request is complete based
-        # on what the handler returns.
+        # First, run the _render_before handler for any pre-rendering actions.
+        # For eaxmple, you might use this to implement a plugin that sets
+        # CORS headers.
         try:
-            content = None
-            complete = False
-            response = handler(request)
+            if wrap:
+                response = yield self._render_before(request)
+                if response and response is not NOT_DONE_YET:
+                    request.write(response)
 
-            if isinstance(response, Deferred):
-                content = yield response
-                complete = True
+            # If _render_before did not finish the request already, continue
+            # running the handler to write its response.
+            if not request.finished:
+                response = yield handler(request)
+                if response and response is not NOT_DONE_YET:
+                    request.write(response)
 
-            elif response is NOT_DONE_YET:
-                content = None
-                complete = False
+                # If the handler did not finish the request already, continue
+                # running the _render_after handler to write any final response.
+                if not request.finished and wrap:
+                    response = yield self._render_after(request)
+                    if response and response is not NOT_DONE_YET:
+                        request.write(response)
 
-            else:
-                content = response
-                complete = True
-
-            # If this response is complete, but the request has not been
-            # finished yet, ensure finish is called.
-            if complete and not request.finished:
-                if content:
-                    request.write(content)
+            # Make sure the request is always finished after executing
+            # the handler and any other wrappers.
+            if not request.finished:
                 request.finish()
 
         except Exception, e:
