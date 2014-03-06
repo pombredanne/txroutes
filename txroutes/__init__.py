@@ -141,7 +141,7 @@ class Dispatcher(Resource):
             ):
 
         # First, run the _render_before handler for any pre-rendering actions.
-        # For eaxmple, you might use this to implement a plugin that sets
+        # For example, you might use this to implement a pre-filter that sets
         # CORS headers.
         try:
             if wrap:
