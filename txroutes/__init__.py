@@ -168,7 +168,10 @@ class Dispatcher(Resource):
             # Use default error rendering when a subclass override of
             # _render_error itself raised an unhandled error.
             if use_default_error_rendering:
-                self.__render_default_error(request, e, failure)
+                content = self.__render_default_error(request, e, failure)
+                if not request.finished:
+                    request.write(content)
+                    request.finish()
 
             # Otherwise, render the error and finish the request. Prevent
             # infinite recursion by ensuring this recursive invocation falls
