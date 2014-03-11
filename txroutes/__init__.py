@@ -67,12 +67,12 @@ class Dispatcher(Resource):
     - Using twisted.web.resources: http://twistedmatrix.com/documents/current/web/howto/web-in-60/dynamic-dispatch.html
     '''
 
-    def __init__(self, logger_name='txroutes'):
+    def __init__(self, logger=logging.getLogger('txroutes')):
         Resource.__init__(self)
 
         self.__controllers = {}
         self.__mapper = routes.Mapper()
-        self.__logger = logging.getLogger(logger_name)
+        self.__logger = logger
 
     def connect(self, name, route, controller, **kwargs):
         self.__controllers[name] = controller
@@ -219,7 +219,7 @@ if __name__ == '__main__':
 
     c = Controller()
 
-    dispatcher = Dispatcher(logger_name='txroutes')
+    dispatcher = Dispatcher(log)
 
     dispatcher.connect(name='index', route='/', controller=c, action='index')
 
