@@ -7,6 +7,13 @@ from twisted.web.server import NOT_DONE_YET
 from twisted.python.failure import Failure
 from twisted.python.log import logging
 
+DEFAULT_404_HTML = '<html><head><title>404 Not Found</title></head>' \
+        '<body><h1>Not found</h1></body></html>'
+
+DEFAULT_500_HTML = '<html><head><title>500 Internal Server Error</title>' \
+        '</head><body><h1>Internal Server Error</h1></body></html>'
+
+
 
 class Dispatcher(Resource):
     '''
@@ -113,26 +120,17 @@ class Dispatcher(Resource):
     # Subclasses can override with their own 404 rendering.
     def _render_404(self, request):
         request.setResponseCode(404)
-        return '<html><head><title>404 Not Found</title></head>' \
-                '<body><h1>Not found</h1></body></html>'
+        return DEFAULT_404_HTML
 
     # Subclasses can override with their own failure rendering.
     def _render_failure(self, request, failure):
         self.__logger.error(failure.getTraceback())
         request.setResponseCode(500)
-        return '<html><head><title>500 Internal Server Error</title></head>' \
-                '<body><h1>Internal Server Error</h1></body></html>'
+        return DEFAULT_500_HTML
 
     # DEPRECATED: _render_error was the old handler for errors.
     def _render_error(self, request, exception=None, failure=None):
         return self._render_failure(request, failure)
-
-    def __render_default_failure(self, request, failure):
-        self.__logger.error(failure.getTraceback())
-        request.setResponseCode(500)
-        return '<html><head><title>500 Internal Server Error</title></head>' \
-                '<body><h1>Internal Server Error</h1></body></html>'
-
 
     @inlineCallbacks
     def __execute_handler(self, request, handler):
@@ -174,9 +172,10 @@ class Dispatcher(Resource):
         # Use default failure rendering when a subclass override of
         # _render_failure itself raised an unhandled error.
         try:
-            content = self.__render_default_failure(request, failure)
+            self.__logger.error(failure.getTraceback())
             if not request.finished:
-                request.write(content)
+                request.setResponseCode(500)
+                request.write(DEFAULT_500_HTML)
                 request.finish()
         except Exception, e:
             self.__logger.exception(e)
