@@ -105,7 +105,9 @@ class Dispatcher(Resource):
                     if func:
                         handler = lambda request: func(request, **result)
 
-        self.__detect_and_execute_handler(request, handler)
+        render = self.__execute_handler(request, handler)
+        render.addErrback(self.__execute_failure, request)
+
         return NOT_DONE_YET
 
     # Subclasses can override with their own 404 rendering.
@@ -114,76 +116,70 @@ class Dispatcher(Resource):
         return '<html><head><title>404 Not Found</title></head>' \
                 '<body><h1>Not found</h1></body></html>'
 
-    # Subclasses can override with their own error rendering.
-    def _render_error(self, request, exception=None, failure=None):
-        return self.__render_default_error(request, exception, failure)
-
-    def __render_default_error(self, request, exception=None, failure=None):
-        if failure:
-            self.__logger.error(failure.getTraceback())
-        else:
-            self.__logger.exception(exception)
+    # Subclasses can override with their own failure rendering.
+    def _render_failure(self, request, failure):
+        self.__logger.error(failure.getTraceback())
         request.setResponseCode(500)
         return '<html><head><title>500 Internal Server Error</title></head>' \
                 '<body><h1>Internal Server Error</h1></body></html>'
 
+    # DEPRECATED: _render_error was the old handler for errors.
+    def _render_error(self, request, exception=None, failure=None):
+        return self._render_failure(request, failure)
+
+    def __render_default_failure(self, request, failure):
+        self.__logger.error(failure.getTraceback())
+        request.setResponseCode(500)
+        return '<html><head><title>500 Internal Server Error</title></head>' \
+                '<body><h1>Internal Server Error</h1></body></html>'
+
+
     @inlineCallbacks
-    def __detect_and_execute_handler(self, request, handler, use_default_error_rendering=False):
+    def __execute_handler(self, request, handler):
 
         # Detect the content and whether the request is complete based
         # on what the handler returns.
-        try:
+        content = None
+        complete = False
+        response = handler(request)
+
+        if isinstance(response, Deferred):
+            content = yield response
+            complete = True
+
+        elif response is NOT_DONE_YET:
             content = None
             complete = False
-            response = handler(request)
 
-            if isinstance(response, Deferred):
-                content = yield response
-                complete = True
+        else:
+            content = response
+            complete = True
 
-            elif response is NOT_DONE_YET:
-                content = None
-                complete = False
+        # If this response is complete, but the request has not been
+        # finished yet, ensure finish is called.
+        if complete and not request.finished:
+            if content:
+                request.write(content)
+            request.finish()
 
-            else:
-                content = response
-                complete = True
+    def __execute_failure(self, failure, request):
 
-            # If this response is complete, but the request has not been
-            # finished yet, ensure finish is called.
-            if complete and not request.finished:
-                if content:
-                    request.write(content)
+        # Render the failure, falling back to the default failure renderer.
+        handler = lambda request: self._render_failure(request, failure)
+        render = self.__execute_handler(request, handler)
+        render.addErrback(self.__execute_default_failure, request)
+
+    def __execute_default_failure(self, failure, request):
+
+        # Use default failure rendering when a subclass override of
+        # _render_failure itself raised an unhandled error.
+        try:
+            content = self.__render_default_failure(request, failure)
+            if not request.finished:
+                request.write(content)
                 request.finish()
-
         except Exception, e:
-
-            # When using inlineCallbacks, logger.exception() does not show the
-            # real traceback. Subclasses will need log failure.getTraceback()
-            # to show tracebacks. Use Failure._findFailure() to get the failure
-            # associated with this exception.
-            failure = None
-            try:
-                failure = Failure._findFailure()
-            except Exception:
-                failure = None
-
-            # Use default error rendering when a subclass override of
-            # _render_error itself raised an unhandled error.
-            if use_default_error_rendering:
-                content = self.__render_default_error(request, e, failure)
-                if not request.finished:
-                    # TODO: try/except around this with logging?
-                    request.write(content)
-                    request.finish()
-
-            # Otherwise, render the error and finish the request. Prevent
-            # infinite recursion by ensuring this recursive invocation falls
-            # back to __render_default_error.
-            else:
-                handler = lambda request: self._render_error(request, e, failure)
-                yield self.__detect_and_execute_handler(request, handler,
-                        use_default_error_rendering=True)
+            self.__logger.exception(e)
 
 
 if __name__ == '__main__':
