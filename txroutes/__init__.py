@@ -128,10 +128,6 @@ class Dispatcher(Resource):
         request.setResponseCode(500)
         return DEFAULT_500_HTML
 
-    # DEPRECATED: _render_error was the old handler for errors.
-    def _render_error(self, request, exception=None, failure=None):
-        return self._render_failure(request, failure)
-
     @inlineCallbacks
     def __execute_handler(self, request, handler):
 
@@ -162,8 +158,16 @@ class Dispatcher(Resource):
 
     def __execute_failure(self, failure, request):
 
-        # Render the failure, falling back to the default failure renderer.
-        handler = lambda request: self._render_failure(request, failure)
+        # If the subclass overrode the deprecated _render_error code, execute
+        # it but log a deprecation warning.
+        if hasattr(self, '_render_error'):
+            self.__logger.warning('_render_error in txroutes.Dispatcher is deprecated, please override _render_failure instead')
+            handler = lambda request: self._render_error(request, failure=failure)
+        else:
+            handler = lambda request: self._render_failure(request, failure)
+
+        # Render the failure, falling back to the default failure renderer
+        # if an error occurs in _render_failure itself.
         render = self.__execute_handler(request, handler)
         render.addErrback(self.__execute_default_failure, request)
 
