@@ -1,3 +1,5 @@
+import logging
+
 import routes
 from twisted.internet.defer import Deferred, inlineCallbacks
 from twisted.web.resource import Resource
@@ -65,11 +67,12 @@ class Dispatcher(Resource):
     - Using twisted.web.resources: http://twistedmatrix.com/documents/current/web/howto/web-in-60/dynamic-dispatch.html
     '''
 
-    def __init__(self):
+    def __init__(self, logger=logging.getLogger('txroutes')):
         Resource.__init__(self)
 
         self.__controllers = {}
         self.__mapper = routes.Mapper()
+        self.__logger = logger
 
     def connect(self, name, route, controller, **kwargs):
         self.__controllers[name] = controller
@@ -117,9 +120,9 @@ class Dispatcher(Resource):
 
     def __render_default_error(self, request, exception=None, failure=None):
         if failure:
-            logging.error(failure.getTraceback())
+            self.__logger.error(failure.getTraceback())
         else:
-            logging.exception(exception)
+            self.__logger.exception(exception)
         request.setResponseCode(500)
         return '<html><head><title>500 Internal Server Error</title></head>' \
                 '<body><h1>Internal Server Error</h1></body></html>'
@@ -187,14 +190,14 @@ if __name__ == '__main__':
     from twisted.web.server import Site
 
     # Set up logging
-    log = logging.getLogger('twisted_routes')
+    log = logging.getLogger('txroutes')
     log.setLevel(logging.INFO)
 
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     log.addHandler(handler)
 
-    observer = twisted.python.log.PythonLoggingObserver(loggerName='twisted_routes')
+    observer = twisted.python.log.PythonLoggingObserver(loggerName='txroutes')
     observer.start()
 
     # Create a Controller
@@ -216,7 +219,7 @@ if __name__ == '__main__':
 
     c = Controller()
 
-    dispatcher = Dispatcher()
+    dispatcher = Dispatcher(log)
 
     dispatcher.connect(name='index', route='/', controller=c, action='index')
 
