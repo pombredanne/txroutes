@@ -181,7 +181,7 @@ class Dispatcher(Resource):
                 request.setResponseCode(500)
                 request.write(DEFAULT_500_HTML)
                 request.finish()
-        except Exception, e:
+        except Exception as e:
             self.__logger.exception(e)
 
 
