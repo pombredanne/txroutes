@@ -1,9 +1,18 @@
+import logging
+
 import routes
 from twisted.internet.defer import Deferred, inlineCallbacks
 from twisted.web.resource import Resource
 from twisted.web.server import NOT_DONE_YET
 from twisted.python.failure import Failure
 from twisted.python.log import logging
+
+DEFAULT_404_HTML = '<html><head><title>404 Not Found</title></head>' \
+        '<body><h1>Not found</h1></body></html>'
+
+DEFAULT_500_HTML = '<html><head><title>500 Internal Server Error</title>' \
+        '</head><body><h1>Internal Server Error</h1></body></html>'
+
 
 
 class Dispatcher(Resource):
@@ -65,11 +74,12 @@ class Dispatcher(Resource):
     - Using twisted.web.resources: http://twistedmatrix.com/documents/current/web/howto/web-in-60/dynamic-dispatch.html
     '''
 
-    def __init__(self):
+    def __init__(self, logger=logging.getLogger('txroutes')):
         Resource.__init__(self)
 
         self.__controllers = {}
         self.__mapper = routes.Mapper()
+        self.__logger = logger
 
     def connect(self, name, route, controller, **kwargs):
         self.__controllers[name] = controller
@@ -102,81 +112,77 @@ class Dispatcher(Resource):
                     if func:
                         handler = lambda request: func(request, **result)
 
-        self.__detect_and_execute_handler(request, handler)
+        render = self.__execute_handler(request, handler)
+        render.addErrback(self.__execute_failure, request)
+
         return NOT_DONE_YET
 
     # Subclasses can override with their own 404 rendering.
     def _render_404(self, request):
         request.setResponseCode(404)
-        return '<html><head><title>404 Not Found</title></head>' \
-                '<body><h1>Not found</h1></body></html>'
+        return DEFAULT_404_HTML
 
-    # Subclasses can override with their own error rendering.
-    def _render_error(self, request, exception=None, failure=None):
-        return self.__render_default_error(request, exception, failure)
-
-    def __render_default_error(self, request, exception=None, failure=None):
-        if failure:
-            logging.error(failure.getTraceback())
-        else:
-            logging.exception(exception)
+    # Subclasses can override with their own failure rendering.
+    def _render_failure(self, request, failure):
+        self.__logger.error(failure.getTraceback())
         request.setResponseCode(500)
-        return '<html><head><title>500 Internal Server Error</title></head>' \
-                '<body><h1>Internal Server Error</h1></body></html>'
+        return DEFAULT_500_HTML
 
     @inlineCallbacks
-    def __detect_and_execute_handler(self, request, handler, use_default_error_rendering=False):
+    def __execute_handler(self, request, handler):
 
         # Detect the content and whether the request is complete based
         # on what the handler returns.
-        try:
+        content = None
+        complete = False
+        response = handler(request)
+
+        if isinstance(response, Deferred):
+            content = yield response
+            complete = True
+
+        elif response is NOT_DONE_YET:
             content = None
             complete = False
-            response = handler(request)
 
-            if isinstance(response, Deferred):
-                content = yield response
-                complete = True
+        else:
+            content = response
+            complete = True
 
-            elif response is NOT_DONE_YET:
-                content = None
-                complete = False
+        # If this response is complete, but the request has not been
+        # finished yet, ensure finish is called.
+        if complete and not request.finished:
+            if content:
+                request.write(content)
+            request.finish()
 
-            else:
-                content = response
-                complete = True
+    def __execute_failure(self, failure, request):
 
-            # If this response is complete, but the request has not been
-            # finished yet, ensure finish is called.
-            if complete and not request.finished:
-                if content:
-                    request.write(content)
+        # If the subclass overrode the deprecated _render_error code, execute
+        # it but log a deprecation warning.
+        if hasattr(self, '_render_error'):
+            self.__logger.warning('_render_error in txroutes.Dispatcher is deprecated, please override _render_failure instead')
+            handler = lambda request: self._render_error(request, failure=failure)
+        else:
+            handler = lambda request: self._render_failure(request, failure)
+
+        # Render the failure, falling back to the default failure renderer
+        # if an error occurs in _render_failure itself.
+        render = self.__execute_handler(request, handler)
+        render.addErrback(self.__execute_default_failure, request)
+
+    def __execute_default_failure(self, failure, request):
+
+        # Use default failure rendering when a subclass override of
+        # _render_failure itself raised an unhandled error.
+        try:
+            self.__logger.error(failure.getTraceback())
+            if not request.finished:
+                request.setResponseCode(500)
+                request.write(DEFAULT_500_HTML)
                 request.finish()
-
-        except Exception, e:
-
-            # When using inlineCallbacks, logger.exception() does not show the
-            # real traceback. Subclasses will need log failure.getTraceback()
-            # to show tracebacks. Use Failure._findFailure() to get the failure
-            # associated with this exception.
-            failure = None
-            try:
-                failure = Failure._findFailure()
-            except Exception:
-                failure = None
-
-            # Use default error rendering when a subclass override of
-            # _render_error itself raised an unhandled error.
-            if use_default_error_rendering:
-                self.__render_default_error(request, e, failure)
-
-            # Otherwise, render the error and finish the request. Prevent
-            # infinite recursion by ensuring this recursive invocation falls
-            # back to __render_default_error.
-            else:
-                handler = lambda request: self._render_error(request, e, failure)
-                yield self.__detect_and_execute_handler(request, handler,
-                        use_default_error_rendering=True)
+        except Exception as e:
+            self.__logger.exception(e)
 
 
 if __name__ == '__main__':
@@ -187,14 +193,14 @@ if __name__ == '__main__':
     from twisted.web.server import Site
 
     # Set up logging
-    log = logging.getLogger('twisted_routes')
+    log = logging.getLogger('txroutes')
     log.setLevel(logging.INFO)
 
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     log.addHandler(handler)
 
-    observer = twisted.python.log.PythonLoggingObserver(loggerName='twisted_routes')
+    observer = twisted.python.log.PythonLoggingObserver(loggerName='txroutes')
     observer.start()
 
     # Create a Controller
@@ -216,7 +222,7 @@ if __name__ == '__main__':
 
     c = Controller()
 
-    dispatcher = Dispatcher()
+    dispatcher = Dispatcher(log)
 
     dispatcher.connect(name='index', route='/', controller=c, action='index')
 
